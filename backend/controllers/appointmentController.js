@@ -1,7 +1,9 @@
 const Appointment = require('../models/Appointment');
+const Payment = require('../models/Payment');
+const Doctor = require('../models/Doctor');
 
 // @desc    Book new appointment
-// @route   POST /api/appointments
+// @route   POST /api/appointments/book
 // @access  Private (Patient)
 const createAppointment = async (req, res) => {
   try {
@@ -11,6 +13,12 @@ const createAppointment = async (req, res) => {
       return res.status(400).json({
         message: 'Doctor, appointment date, and time are required',
       });
+    }
+
+    // Get doctor info for fee
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor) {
+      return res.status(404).json({ message: 'Doctor not found' });
     }
 
     // Prevent double-booking: check if doctor already has appointment at same date+time
@@ -33,12 +41,24 @@ const createAppointment = async (req, res) => {
       appointmentDate: new Date(appointmentDate),
       appointmentTime,
       reason: reason || '',
+      status: 'Pending'
+    });
+
+    // Create UNPAID payment record immediately
+    await Payment.create({
+      patientId: req.user._id,
+      doctorId,
+      appointmentId: appointment._id,
+      consultationFee: doctor.consultationFee,
+      totalAmount: doctor.consultationFee,
+      paymentMethod: null,
+      status: 'Unpaid'
     });
 
     // Populate and return
     const populatedAppointment = await Appointment.findById(appointment._id)
       .populate('patientId', 'name email phone')
-      .populate('doctorId', 'name specialization consultationFee');
+      .populate('doctorId', 'name specialization consultationFee availableDays availableTime');
 
     res.status(201).json(populatedAppointment);
   } catch (error) {
@@ -57,7 +77,7 @@ const getAllAppointments = async (req, res) => {
 
     const appointments = await Appointment.find(query)
       .populate('patientId', 'name email phone')
-      .populate('doctorId', 'name specialization')
+      .populate('doctorId', 'name specialization availableDays availableTime')
       .sort({ appointmentDate: -1 });
 
     res.status(200).json(appointments);
@@ -73,10 +93,23 @@ const getAllAppointments = async (req, res) => {
 const getMyAppointments = async (req, res) => {
   try {
     const appointments = await Appointment.find({ patientId: req.user._id })
-      .populate('doctorId', 'name specialization consultationFee profileImage')
+      .populate('doctorId', 'name specialization consultationFee profileImage availableDays availableTime')
       .sort({ appointmentDate: -1 });
 
-    res.status(200).json(appointments);
+    // Fetch payment status for each appointment
+    const appointmentsWithPayment = await Promise.all(
+      appointments.map(async (app) => {
+        const payment = await Payment.findOne({ appointmentId: app._id });
+        return {
+          ...app.toObject(),
+          paymentStatus: payment ? payment.status : 'Unpaid',
+          paymentId: payment ? payment._id : null,
+          paymentMethod: payment ? payment.paymentMethod : null,
+        };
+      })
+    );
+
+    res.status(200).json(appointmentsWithPayment);
   } catch (error) {
     console.error('Get my appointments error:', error.message);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -90,7 +123,7 @@ const getDoctorAppointments = async (req, res) => {
   try {
     const appointments = await Appointment.find({ doctorId: req.params.id })
       .populate('patientId', 'name email phone')
-      .populate('doctorId', 'name specialization')
+      .populate('doctorId', 'name specialization availableDays availableTime')
       .sort({ appointmentDate: -1 });
 
     res.status(200).json(appointments);
@@ -107,7 +140,7 @@ const getAppointmentById = async (req, res) => {
   try {
     const appointment = await Appointment.findById(req.params.id)
       .populate('patientId', 'name email phone')
-      .populate('doctorId', 'name specialization consultationFee hospital');
+      .populate('doctorId', 'name specialization consultationFee hospital availableDays availableTime');
 
     if (!appointment) {
       return res.status(404).json({ message: 'Appointment not found' });
@@ -150,7 +183,7 @@ const updateAppointmentStatus = async (req, res) => {
 
     const updatedAppointment = await Appointment.findById(appointment._id)
       .populate('patientId', 'name email phone')
-      .populate('doctorId', 'name specialization');
+      .populate('doctorId', 'name specialization availableDays availableTime');
 
     res.status(200).json(updatedAppointment);
   } catch (error) {
@@ -181,7 +214,45 @@ const addAppointmentNotes = async (req, res) => {
   }
 };
 
-// @desc    Cancel appointment (patient, only if Pending)
+// @desc    Update appointment (date, time, reason)
+// @route   PUT /api/appointments/:id
+// @access  Private
+const updateAppointment = async (req, res) => {
+  try {
+    const { appointmentDate, appointmentTime, reason } = req.body;
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+      return res.status(404).json({ message: 'Appointment not found' });
+    }
+
+    // Only the patient who booked or an admin can update
+    if (appointment.patientId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized to update this appointment' });
+    }
+
+    if (appointment.status === 'Cancelled' || appointment.status === 'Completed') {
+      return res.status(400).json({ message: 'Cannot update cancelled or completed appointments' });
+    }
+
+    if (appointmentDate) appointment.appointmentDate = new Date(appointmentDate);
+    if (appointmentTime) appointment.appointmentTime = appointmentTime;
+    if (reason) appointment.reason = reason;
+
+    await appointment.save();
+
+    const updated = await Appointment.findById(appointment._id)
+      .populate('patientId', 'name email phone')
+      .populate('doctorId', 'name specialization availableDays availableTime');
+
+    res.status(200).json(updated);
+  } catch (error) {
+    console.error('Update appointment error:', error.message);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Cancel appointment (patient/admin)
 // @route   DELETE /api/appointments/:id
 // @access  Private
 const cancelAppointment = async (req, res) => {
@@ -197,9 +268,9 @@ const cancelAppointment = async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to cancel this appointment' });
     }
 
-    if (appointment.status !== 'Pending') {
+    if (appointment.status === 'Cancelled' || appointment.status === 'Completed') {
       return res.status(400).json({
-        message: 'Only pending appointments can be cancelled',
+        message: 'Appointment is already cancelled or completed',
       });
     }
 
@@ -217,4 +288,5 @@ module.exports = {
   createAppointment, getAllAppointments, getMyAppointments,
   getDoctorAppointments, getAppointmentById,
   updateAppointmentStatus, addAppointmentNotes, cancelAppointment,
+  updateAppointment,
 };

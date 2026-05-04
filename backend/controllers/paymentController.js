@@ -3,40 +3,17 @@ const User = require('../models/User');
 const Appointment = require('../models/Appointment');
 const Doctor = require('../models/Doctor');
 
-// @desc    Create a payment (at booking)
-// @route   POST /api/payments/create
-// @access  Private (Patient)
-const createPayment = async (req, res) => {
-  try {
-    const { appointmentId, doctorId, consultationFee, paymentMethod } = req.body;
-    
-    const status = paymentMethod === 'Card' ? 'Paid' : 'Unpaid';
-    const paidAt = paymentMethod === 'Card' ? new Date() : null;
-
-    const payment = await Payment.create({
-      patientId: req.user._id,
-      doctorId,
-      appointmentId,
-      consultationFee,
-      totalAmount: consultationFee,
-      paymentMethod,
-      status,
-      paidAt
-    });
-
-    res.status(201).json(payment);
-  } catch (error) {
-    console.error('Create payment error:', error.message);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-};
 
 // @desc    Get patient payments
 // @route   GET /api/payments/patient/:id
 // @access  Private (Patient)
 const getPatientPayments = async (req, res) => {
   try {
-    const payments = await Payment.find({ patientId: req.params.id })
+    const { status } = req.query;
+    const query = { patientId: req.params.id };
+    if (status && status !== 'All') query.status = status;
+
+    const payments = await Payment.find(query)
       .populate('doctorId', 'name specialization profileImage')
       .populate('appointmentId', 'appointmentDate appointmentTime')
       .sort({ createdAt: -1 });
@@ -51,7 +28,11 @@ const getPatientPayments = async (req, res) => {
 // @access  Private (Doctor)
 const getDoctorPayments = async (req, res) => {
   try {
-    const payments = await Payment.find({ doctorId: req.params.id })
+    const { status } = req.query;
+    const query = { doctorId: req.params.id };
+    if (status && status !== 'All') query.status = status;
+
+    const payments = await Payment.find(query)
       .populate('patientId', 'name email phone profileImage')
       .populate('appointmentId', 'appointmentDate appointmentTime')
       .sort({ createdAt: -1 });
@@ -119,7 +100,7 @@ const getPaymentByAppointment = async (req, res) => {
       .populate('doctorId', 'name specialization');
 
     if (!payment) {
-      return res.status(404).json({ message: 'Payment not found for this appointment' });
+      return res.json(null);
     }
 
     // Check authorization: Admin, the patient, or the doctor
@@ -150,12 +131,73 @@ const createPaymentRecord = async (appointmentId) => {
   return null;
 };
 
+// @desc    Get logged in user's payments
+// @route   GET /api/payments/my
+// @access  Private
+const getMyPayments = async (req, res) => {
+  try {
+    let query = {};
+    if (req.user.role === 'doctor') {
+      const doctorProfile = await Doctor.findOne({ userId: req.user._id });
+      if (!doctorProfile) return res.status(404).json({ message: 'Doctor profile not found' });
+      query = { doctorId: doctorProfile._id };
+    } else {
+      query = { patientId: req.user._id };
+    }
+
+    const payments = await Payment.find(query)
+      .populate('patientId', 'name email phone')
+      .populate('doctorId', 'name specialization profileImage')
+      .populate('appointmentId', 'appointmentDate appointmentTime')
+      .sort({ createdAt: -1 });
+    
+    res.json(payments);
+  } catch (error) {
+    console.error('Error fetching my payments:', error.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Process payment (Card or Cash)
+// @route   PUT /api/payments/:id/pay
+// @access  Private (Patient)
+const payPayment = async (req, res) => {
+  try {
+    const { paymentMethod } = req.body;
+    const payment = await Payment.findById(req.params.id);
+
+    if (!payment) return res.status(404).json({ message: 'Payment not found' });
+    if (payment.patientId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Not authorized to pay for this' });
+    }
+
+    if (payment.status === 'Paid') {
+      return res.status(400).json({ message: 'Payment already completed' });
+    }
+
+    payment.paymentMethod = paymentMethod;
+    if (paymentMethod === 'Card') {
+      payment.status = 'Paid';
+      payment.paidAt = new Date();
+    } else {
+      payment.status = 'Unpaid'; // Stays unpaid for Cash until doctor confirms
+    }
+
+    await payment.save();
+    res.json({ message: 'Payment updated successfully', payment });
+  } catch (error) {
+    console.error('Pay payment error:', error.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 module.exports = {
-  createPayment,
+  payPayment,
   getPatientPayments,
   getDoctorPayments,
   getAllPayments,
   markPaid,
   getPaymentByAppointment,
+  getMyPayments,
   createPaymentRecord
 };

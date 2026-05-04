@@ -1,4 +1,4 @@
-GitHub Repository: https://github.com/IT24101325/medihelp
+GitHub Repository: https://github.com/<your-repo>/medihelp
 Group Number: WD-IT-47
 
 Member 1: IT24103214 – Weerakoon W.M.L.C – Doctor Profile Management
@@ -10,3 +10,22 @@ Member 6: IT24100202 – Wijayarathana M.G.S.I – Prescription Management
 
 Backend URL: https://<your-render-app>.onrender.com
 
+=== SETUP INSTRUCTIONS ===
+
+Backend:
+1. cd backend
+2. npm install
+3. Create .env file with MONGO_URI, JWT_SECRET, PORT
+4. npm run dev
+
+Frontend:
+1. cd frontend
+2. npm install
+3. npx expo start
+
+=== TECHNOLOGY STACK ===
+- Frontend: React Native (Expo)
+- Backend: Node.js + Express.js
+- Database: MongoDB (MongoDB Atlas)
+- Authentication: JWT + bcrypt
+- File Upload: Multer
